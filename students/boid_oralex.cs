@@ -17,6 +17,8 @@ namespace BoidArena
             Vector3d safety = Vector3d.Zero;
             Vector3d target = Vector3d.Zero;
             double bestScore = double.MaxValue;
+            double tauntDistance = double.MaxValue;
+            Vector3d tauntOffset = Vector3d.Zero;
 
             // 異隊都可能擊殺我；優先避開接近且有攻擊角度的對手。
             foreach (Neighbor n in neighbors)
@@ -25,6 +27,11 @@ namespace BoidArena
                 Vector3d offset = n.Position - self.Position;
                 Vector3d direction = Steering.Unit(offset);
                 Vector3d enemyHeading = Steering.Unit(n.Velocity);
+                if (n.Distance < tauntDistance)
+                {
+                    tauntDistance = n.Distance;
+                    tauntOffset = offset;
+                }
                 double enemyFacesMe = -(enemyHeading * direction);
                 bool behindMe = heading * direction < -0.25;
 
@@ -86,6 +93,15 @@ namespace BoidArena
                     if (distance < nearestDistance) { nearest = star; nearestDistance = distance; }
                 }
                 return Steering.Seek(Route(self.Position, nearest, world), self.Velocity, world);
+            }
+
+            // While safely invincible, circle a nearby opponent as a playful taunt.
+            if (self.InvincibleSteps > 15 && tauntDistance < 6.0)
+            {
+                Vector3d toward = Steering.Unit(tauntOffset);
+                Vector3d sideways = new Vector3d(-toward.Y, toward.X, 0);
+                Vector3d orbit = sideways + toward * ((tauntDistance - 3.0) * 0.35);
+                return Steering.Seek(orbit, self.Velocity, world);
             }
 
             if (bestScore < double.MaxValue && target.Length > 0.001)
