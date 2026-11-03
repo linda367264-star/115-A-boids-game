@@ -1,103 +1,299 @@
-using System;
 using System.Collections.Generic;
-using System.Drawing;
 using Rhino.Geometry;
 
 namespace BoidArena
 {
-    // ============================================================================
-    // 學生範本：複製這個檔，改檔名成 boid_{你的名字}.cs，
-    // 並把 class 名稱改成 Boid_{你的名字}、Name 改成你的隊名（只改這個檔，不要動 core、host）
-    //
-    // 這個檔只列出「你拿得到什麼」，怎麼用、要寫什麼行為，全部由你自己決定。
-    // 所有資料都是唯讀的複本，改它不會影響別人，也不會影響比賽。
-    // ============================================================================
-    //
-    // 【每隻鳥每一步，引擎呼叫一次 Decide，傳進 4 組資料】
-    //
-    // ■ self（SelfInfo）：這一隻自己
-    //     self.Position          Point3d    我的位置
-    //     self.Velocity          Vector3d   我的速度（方向＝我面向哪裡）
-    //     self.Team              int        我的隊伍編號
-    //     self.Name              string     我的隊名（等於下面 Name 屬性的值）
-    //     self.InvincibleSteps   int        我還剩幾步無敵（0 = 沒有）
-    //     self.Stars             List<Point3d>  視野內的五芒星位置（沒有就是空清單）
-    //     self.Rng               Random     我的專屬亂數產生器（要亂數只能用它）
-    //
-    // ■ neighbors（List<Neighbor>）：視野內的其他鳥（不含自己；沒有就是空清單）。每一個 Neighbor 有：
-    //     Position           Point3d    它的位置
-    //     Velocity           Vector3d   它的速度
-    //     Team               int        它的隊伍編號
-    //     Name               string     它所屬隊伍的隊名
-    //     Relation           Relation   對我來說它是什麼身份：Ally 友軍／Enemy 敵軍／Neutral 不相關
-    //                                   （Self 這個值是留給 table.Get 查自己用的）
-    //                                   預設：同隊＝友軍，異隊＝敵軍；可以在 Declare 裡改
-    //     IsFriend           bool       是不是同隊（不受 Declare 影響）
-    //     InvincibleSteps    int        它還剩幾步無敵（0 = 沒有）
-    //     Distance           double     它離我多遠
-    //
-    // ■ foods（List<Point3d>）：視野內的食物位置（沒有就是空清單）
-    //
-    // ■ world（World）：場地與物理限制，全隊相同
-    //     world.Center       Point3d    場地中心（原點）
-    //     world.HalfSize     double     場地目前的半邊長（正方形；縮小期會變小）
-    //     world.Step         int        現在是第幾步
-    //     world.Phase        int        現在的階段：1 穩定期、2 縮小期、3 決戰期
-    //     world.ViewRadius   double     視野半徑（10）
-    //     world.MaxSpeed     double     速度上限（0.5）
-    //     world.MaxForce     double     轉向力上限（0.05）
-    //     world.Obstacles    IList<Obstacle>  目前場上的障礙物（矩形，與座標軸平行）。每個 Obstacle 有：
-    //         Center         Point3d    中心
-    //         HalfWidth      double     X 方向的半寬
-    //         HalfHeight     double     Y 方向的半高
-    //         ClosestPoint(Point3d p)   Point3d  矩形上離 p 最近的點
-    //         DistanceTo(Point3d p)     double   p 到矩形邊緣的距離（在裡面是 0）
-    //
-    // 【可以呼叫的函式】
-    //     Steering.Unit(Vector3d v)                          回傳 v 的單位向量（太短就回零向量）
-    //     Steering.Seek(Vector3d 想去的方向, Vector3d 目前速度, World world)
-    //                                                        回傳「往那個方向轉」的轉向力（長度已限制在 MaxForce）
-    //
-    // 【開賽前只呼叫一次的 Declare(RelationTable table)，table 有：】
-    //     table.MyName        string          我的隊名
-    //     table.AllNames      IList<string>   這一場所有參賽隊伍的名字（含自己）
-    //     table.Ally(string 隊名)               把某隊標成友軍
-    //     table.Enemy(string 隊名)              把某隊標成敵軍
-    //     table.Neutral(string 隊名)            把某隊標成不相關
-    //     table.Get(string 隊名)  Relation       查某隊現在的身份（自己這隊回傳 Self）
-    //   不需要的話，可以把 `: IBrain, IDeclareRelations` 改成 `: IBrain`，並刪掉 Declare。
-    //
-    // 【回傳值】
-    //     Decide 回傳一個 Vector3d，代表「我想往哪轉」。引擎會自動把它限制在 MaxForce 以內，
-    //     而且這是 2D 遊戲：Z 方向一律被丟掉。
-    //
-    // 【遊戲規則裡和你有關的事實】
-    //     - 全場 2D，場地是以原點為中心的正方形；一回合約 3 分鐘，存活最多的隊伍獲勝
-    //     - 吃到食物：該隻複製成兩隻（全場上限 500 隻，滿了不能出生）
-    //     - 吃到五芒星：無敵 100 步，殺不死，但照樣能殺別人
-    //     - 異隊碰到時：A 的前方 60 度碰到 B 的正後方 60 度，A 殺死 B；正面對撞或側邊碰撞互相彈開
-    //     - 身份（友軍／敵軍／不相關）只是你自己用的標籤，不改變擊殺規則
-    //     - 每隊每步所有 Decide 加起來要在 15 毫秒內；丟例外、回傳 NaN 或太慢，整隊淘汰
-    //     - 顏色由老師分配，你不用寫
-    //
-    // 【禁止】（違反的檔案不會參賽）
-    //     不可使用檔案、網路、執行緒、反射；不可自己 new Random、不可用 DateTime.Now、Guid.NewGuid、Environment；
-    //     不可有 static 可變欄位（static readonly 可以）；不可碰 Arena、Agent、Roster；
-    //     不要用 Vector3d.Unitize（改用 Steering.Unit）；需要額外的輔助類別，名稱前面加上你的名字
-    // ============================================================================
-    public class Boid_template : IBrain, IDeclareRelations
+    public class Boid_拾星者 : IBrain, IDeclareRelations
     {
-        public string Name { get { return "template"; } }
+        public string Name { get { return "拾星者"; } }
 
-        // 開賽前引擎只呼叫一次
         public void Declare(RelationTable table)
         {
+            // 保留預設身份；異隊即使被標成友軍，碰撞仍可能致命。
         }
 
-        // 每隻鳥每一步都會呼叫一次，回傳「想往哪轉」的向量
-        public Vector3d Decide(SelfInfo self, List<Neighbor> neighbors, List<Point3d> foods, World world)
+        public Vector3d Decide(SelfInfo self, List<Neighbor> neighbors,
+            List<Point3d> foods, World world)
         {
-            return Vector3d.Zero;
+            // 不保存個體狀態，因此同一個腦袋供全隊共用也不會互相干擾。
+            if (world == null || !self.Position.IsValid || !self.Velocity.IsValid)
+                return Vector3d.Zero;
+            if (!world.Center.IsValid || !(world.HalfSize > 0) ||
+                !(world.MaxSpeed > 0) || !(world.MaxForce > 0))
+                return Vector3d.Zero;
+
+            Vector3d velocity = Flat(self.Velocity);
+            Vector3d heading = Steering.Unit(velocity);
+            double speed = velocity.Length;
+            double view = System.Math.Max(world.ViewRadius, world.MaxSpeed * 4);
+            double fearRadius = System.Math.Max(view * 0.45, world.MaxSpeed * 5);
+            double turnSteps = world.MaxSpeed / world.MaxForce;
+            double horizon = Clamp(turnSteps, 3, 12);
+            // 無敵快結束時提早恢復避敵，留出轉向撤退的時間。
+            bool shield = self.InvincibleSteps > turnSteps + 6;
+            Vector3d flee = Vector3d.Zero;
+            double danger = 0;
+            bool hasThreat = false;
+            Point3d threat = self.Position;
+            double nearestThreat = double.MaxValue;
+            bool hasPrey = false;
+            Point3d prey = self.Position;
+            double bestPrey = double.MaxValue;
+
+            // 每隻鄰居只掃一次；同隊分離完全交給引擎。
+            if (neighbors != null)
+            {
+                for (int i = 0; i < neighbors.Count; i++)
+                {
+                    Neighbor n = neighbors[i];
+                    if (n.Team == self.Team || n.IsFriend ||
+                        !n.Position.IsValid || !n.Velocity.IsValid) continue;
+
+                    Vector3d delta = Flat(n.Position - self.Position);
+                    double distance = delta.Length;
+                    Vector3d toward = Steering.Unit(delta);
+                    Vector3d enemyHeading = Steering.Unit(Flat(n.Velocity));
+                    // 六十度錐的總角度若為六十度，半角就是三十度。
+                    // 採用更窄的判斷，保留轉向與碰撞的誤差空間。
+                    bool behindEnemy = Dot(enemyHeading, toward) > 0.90;
+                    bool aligned = Dot(heading, toward) > 0.90;
+                    bool tailOpportunity = behindEnemy && aligned;
+
+                    if (distance < nearestThreat)
+                    {
+                        nearestThreat = distance;
+                        threat = n.Position;
+                        hasThreat = true;
+                    }
+
+                    // 無敵不代表正面能殺人；仍以敵人的後方作為接近點。
+                    // 預留轉向與撤退時間；對方無敵時絕不列為獵物。
+                    double travelSteps = distance / world.MaxSpeed;
+                    bool shieldEnough = self.InvincibleSteps > travelSteps + turnSteps + 12;
+                    if (n.Relation == Relation.Enemy && n.InvincibleSteps <= 0 &&
+                        enemyHeading.SquareLength > 0 &&
+                        (shieldEnough || (!shield && tailOpportunity && distance < fearRadius)))
+                    {
+                        double score = distance + (behindEnemy ? 0 : view);
+                        if (score < bestPrey)
+                        {
+                            bestPrey = score;
+                            double lead = System.Math.Min(travelSteps * 0.35, 3);
+                            double rearOffset = tailOpportunity ? 0 : world.MaxSpeed * 3;
+                            prey = n.Position + Flat(n.Velocity) * lead - enemyHeading * rearOffset;
+                            hasPrey = true;
+                        }
+                    }
+
+                    if (shield) continue;
+
+                    // 預測短時間內的最近接近點，提早避開迎面交會。
+                    Vector3d relative = Flat(n.Velocity) - velocity;
+                    double relativeSpeed2 = relative.SquareLength;
+                    double time = relativeSpeed2 > 1e-12
+                        ? Clamp(-Dot(delta, relative) / relativeSpeed2, 0, horizon) : 0;
+                    Vector3d closest = delta + relative * time;
+                    double closeDistance = closest.Length;
+                    double risk = Clamp(1 - distance / fearRadius, 0, 1);
+                    if (time > 0 && closeDistance < world.MaxSpeed * 3)
+                        risk = System.Math.Max(risk,
+                            (1 - closeDistance / (world.MaxSpeed * 3)) / (1 + time * 0.12));
+
+                    // 正後方有人追殺時加入橫移，避免只沿直線逃跑。
+                    bool rearThreat = Dot(enemyHeading, -toward) > 0.80 &&
+                        Dot(heading, -toward) > 0.80;
+                    if (rearThreat && distance < fearRadius) risk *= 1.6;
+                    if (n.InvincibleSteps > 0) risk *= 1.5;
+                    if (tailOpportunity && n.InvincibleSteps <= 0) risk *= 0.15;
+                    Vector3d away = -Steering.Unit(closest);
+                    if (away.SquareLength < 1e-12) away = -toward;
+                    if (away.SquareLength < 1e-12)
+                        away = new Vector3d(self.Team % 2 == 0 ? 1 : -1, 0, 0);
+                    if (rearThreat)
+                    {
+                        Vector3d side = new Vector3d(-heading.Y, heading.X, 0);
+                        if (Dot(side, away) < 0) side = -side;
+                        away = Steering.Unit(away + side * 1.4);
+                    }
+                    flee += away * risk;
+                    danger = System.Math.Max(danger, risk);
+                }
+            }
+
+            // 第三階段只是停止生成食物；仍然吃場上剩餘的食物。
+            Point3d star, food;
+            bool hasStar = Resource(self.Stars, self, world, threat,
+                hasThreat && !shield, fearRadius, out star);
+            bool hasFood = Resource(foods, self, world, threat,
+                hasThreat && !shield, fearRadius, out food);
+
+            Vector3d desired;
+            if (hasStar && self.InvincibleSteps < 20)
+                desired = Flat(star - self.Position);
+            else if (shield && hasPrey)
+                desired = Flat(prey - self.Position);
+            else if (hasFood)
+                desired = Flat(food - self.Position);
+            else if (hasStar)
+                desired = Flat(star - self.Position);
+            else if (hasPrey && danger < 0.25)
+                desired = Flat(prey - self.Position);
+            else
+            {
+                // 食物吃完且沒有安全的背襲機會時，繼續探索。
+                // 亂數僅由引擎提供，重播時可以得到相同結果。
+                double r = self.Rng == null ? 0.5 : self.Rng.NextDouble();
+                double angle = heading.SquareLength > 0
+                    ? System.Math.Atan2(heading.Y, heading.X) + (r - 0.5) * 0.35
+                    : r * System.Math.PI * 2;
+                desired = new Vector3d(System.Math.Cos(angle), System.Math.Sin(angle), 0);
+            }
+
+            desired = Steering.Unit(desired);
+            if (flee.SquareLength > 1e-12)
+            {
+                // 危險時求生優先；危險較低時仍保留覓食的方向。
+                desired = danger > 0.55 ? Steering.Unit(flee)
+                    : Steering.Unit(desired + Steering.Unit(flee) * danger * 2);
+            }
+            if (desired.SquareLength < 1e-12)
+                desired = heading.SquareLength > 0 ? heading : Vector3d.XAxis;
+
+            // 邊界留出轉向空間；縮圈期額外提前往場內靠。
+            double margin = world.MaxSpeed * 3 + speed * speed / (2 * world.MaxForce);
+            if (world.Phase == 2) margin *= 1.35;
+            margin = System.Math.Min(margin, world.HalfSize * 0.45);
+            double px = self.Position.X - world.Center.X;
+            double py = self.Position.Y - world.Center.Y;
+            double safe = world.HalfSize - margin;
+            Vector3d wall = new Vector3d(
+                WallAxis(px, velocity.X, safe, margin, horizon),
+                WallAxis(py, velocity.Y, safe, margin, horizon), 0);
+            if (wall.SquareLength > 1e-12)
+                desired = Steering.Unit(desired + wall * 3);
+
+            // 路徑穿過矩形時繞行；已在障礙物內則走最近的出口。
+            desired = AvoidRectangles(self.Position, velocity, desired, world, horizon);
+            Vector3d force = Flat(Steering.Seek(desired, velocity, world));
+            if (!force.IsValid) return Vector3d.Zero;
+            if (force.Length > world.MaxForce)
+                force = Steering.Unit(force) * world.MaxForce;
+            return force;
+        }
+
+        private bool Resource(List<Point3d> points, SelfInfo self, World world,
+            Point3d threat, bool avoidThreat, double radius, out Point3d result)
+        {
+            result = self.Position;
+            if (points == null) return false;
+            double best = double.MaxValue;
+            bool found = false;
+            for (int i = 0; i < points.Count; i++)
+            {
+                Point3d p = points[i];
+                if (!p.IsValid || System.Math.Abs(p.X - world.Center.X) > world.HalfSize ||
+                    System.Math.Abs(p.Y - world.Center.Y) > world.HalfSize) continue;
+                double score = Flat(p - self.Position).Length;
+                // 用最近的異隊估計資源風險，避免逐一配對造成大量計算。
+                if (avoidThreat)
+                    score += System.Math.Max(0, radius - Flat(p - threat).Length) * 3;
+                if (score >= best) continue;
+                best = score;
+                result = p;
+                found = true;
+            }
+            return found;
+        }
+
+        private Vector3d AvoidRectangles(Point3d position, Vector3d velocity,
+            Vector3d desired, World world, double horizon)
+        {
+            if (world.Obstacles == null) return desired;
+            double padding = world.MaxSpeed * 1.5;
+            Vector3d path = velocity * (horizon * 0.5) +
+                desired * (world.MaxSpeed * horizon * 0.75);
+            double first = double.MaxValue;
+            Vector3d avoidance = desired;
+            for (int i = 0; i < world.Obstacles.Count; i++)
+            {
+                var ob = world.Obstacles[i];
+                if (ob == null) continue;
+                double x = position.X - ob.Center.X;
+                double y = position.Y - ob.Center.Y;
+                bool inside = System.Math.Abs(x) <= ob.HalfWidth &&
+                    System.Math.Abs(y) <= ob.HalfHeight;
+                Vector3d normal;
+                double entry = 0;
+                if (inside)
+                {
+                    // 最近點在矩形內會等於自己，所以不能直接相減求逃生方向。
+                    double dx = ob.HalfWidth - System.Math.Abs(x);
+                    double dy = ob.HalfHeight - System.Math.Abs(y);
+                    normal = dx <= dy ? new Vector3d(x >= 0 ? 1 : -1, 0, 0)
+                        : new Vector3d(0, y >= 0 ? 1 : -1, 0);
+                    entry = -1;
+                }
+                else
+                {
+                    double exit = 1;
+                    if (!Slab(x, path.X, ob.HalfWidth + padding, ref entry, ref exit) ||
+                        !Slab(y, path.Y, ob.HalfHeight + padding, ref entry, ref exit)) continue;
+                    Point3d hit = position + path * entry;
+                    normal = Steering.Unit(Flat(hit - ob.ClosestPoint(hit)));
+                    if (normal.SquareLength < 1e-12)
+                        normal = Steering.Unit(Flat(position - ob.ClosestPoint(position)));
+                }
+                if (entry >= first) continue;
+                first = entry;
+                if (inside) avoidance = normal;
+                else
+                {
+                    Vector3d tangent = new Vector3d(-normal.Y, normal.X, 0);
+                    if (Dot(tangent, desired) < 0) tangent = -tangent;
+                    double push = entry < 0.2 ? 1.5 : 0.5;
+                    avoidance = Steering.Unit(normal * push + tangent * 1.5);
+                }
+            }
+            return avoidance;
+        }
+
+        private bool Slab(double position, double move, double half,
+            ref double entry, ref double exit)
+        {
+            // 線段與矩形的單軸區間測試；平行於邊時不做除法。
+            if (System.Math.Abs(move) < 1e-12)
+                return System.Math.Abs(position) <= half;
+            double a = (-half - position) / move;
+            double b = (half - position) / move;
+            entry = System.Math.Max(entry, System.Math.Min(a, b));
+            exit = System.Math.Min(exit, System.Math.Max(a, b));
+            return entry <= exit;
+        }
+
+        private double WallAxis(double position, double velocity,
+            double safe, double margin, double horizon)
+        {
+            // 比較目前位置與預測位置，避免尚未越界就繼續朝外衝。
+            double future = position + velocity * horizon * 0.7;
+            double upper = System.Math.Max(position, future) - safe;
+            double lower = -safe - System.Math.Min(position, future);
+            double scale = System.Math.Max(margin, 1e-9);
+            return Clamp(lower / scale, 0, 2) - Clamp(upper / scale, 0, 2);
+        }
+
+        private Vector3d Flat(Vector3d v)
+        {
+            return new Vector3d(v.X, v.Y, 0);
+        }
+
+        private double Dot(Vector3d a, Vector3d b)
+        {
+            return a.X * b.X + a.Y * b.Y;
+        }
+
+        private double Clamp(double value, double low, double high)
+        {
+            return System.Math.Max(low, System.Math.Min(high, value));
         }
     }
 }
